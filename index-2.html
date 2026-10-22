@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zip to APK</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #eef1f4; --ink: #14202b; --muted: #55626f; --line: #c9d1d9;
+    --accent: #1f6f5c; --accent-ink: #fff; --error: #a3261f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 18px/1.5 "Atkinson Hyperlegible", system-ui, sans-serif;
+    display: flex; justify-content: center; padding: 40px 20px;
+  }
+  main { width: 100%; max-width: 520px; }
+  h1 { font-size: 2.2rem; line-height: 1.1; margin: 0 0 8px; }
+  p.lead { margin: 0 0 24px; color: var(--muted); }
+  label { display: block; font-weight: 700; margin: 18px 0 6px; }
+  .hint { font-weight: 400; color: var(--muted); font-size: 0.9rem; }
+  input[type=text], input[type=file] {
+    width: 100%; font: inherit; padding: 12px; background: #fff;
+    border: 2px solid var(--line); border-radius: 6px; color: var(--ink);
+  }
+  input:focus-visible, button:focus-visible, a.btn:focus-visible {
+    outline: 3px solid var(--accent); outline-offset: 2px;
+  }
+  button, a.btn {
+    display: inline-block; margin-top: 28px; width: 100%; padding: 14px; font: inherit;
+    font-weight: 700; text-align: center; text-decoration: none; color: var(--accent-ink);
+    background: var(--accent); border: 0; border-radius: 6px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  .fine { margin-top: 20px; color: var(--muted); font-size: 0.85rem; }
+  #status { margin-top: 28px; display: none; }
+  #step { font-weight: 700; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  .bar i { display: block; height: 100%; width: 40%; background: var(--accent); animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+  @media (prefers-reduced-motion: reduce) { .bar i { animation: none; width: 100%; } }
+  #error { color: var(--error); font-weight: 700; }
+  #error a { color: var(--error); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Turn a web page into an APK</h1>
+  <p class="lead">Choose an HTML file, or a zip with your HTML, CSS and JavaScript. You get an Android app to install.</p>
+
+  <label for="file">Your file <span class="hint">(.html or .zip, up to 25 MB)</span></label>
+  <input id="file" type="file" accept=".html,.htm,.zip">
+
+  <label for="name">App name</label>
+  <input id="name" type="text" value="My App" maxlength="40">
+
+  <label for="appId">Package name <span class="hint">(optional, like com.yourname.app)</span></label>
+  <input id="appId" type="text" placeholder="com.example.myapp">
+
+  <button id="go">Build APK</button>
+  <p class="fine">Your file is built on GitHub and the download link is public. Don't upload anything private.</p>
+
+  <section id="status" aria-live="polite">
+    <div id="step"></div>
+    <div class="bar" id="bar"><i></i></div>
+    <p id="error"></p>
+  </section>
+</main>
+
+<script>
+// Replace with your Cloudflare Worker address (see README)
+const WORKER_URL = 'https://YOUR-WORKER.YOUR-NAME.workers.dev';
+
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function fail(msg, url) {
+  $('error').textContent = msg + ' ';
+  if (url) {
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'See the build log';
+    $('error').appendChild(a);
+  }
+  $('bar').style.display = 'none';
+  $('go').disabled = false;
+}
+
+$('go').addEventListener('click', async () => {
+  const file = $('file').files[0];
+  if (!file) { alert('Choose an HTML or zip file first.'); return; }
+  if (WORKER_URL.includes('YOUR-WORKER')) { alert('This site is not set up yet: the owner needs to add the Worker address.'); return; }
+
+  const form = new FormData();
+  form.append('file', file);
+  form.append('name', $('name').value);
+  form.append('appId', $('appId').value);
+
+  $('go').disabled = true;
+  $('status').style.display = 'block';
+  $('error').textContent = '';
+  $('bar').style.display = 'block';
+  $('step').textContent = 'Uploading your file';
+  document.querySelectorAll('a.btn').forEach(a => a.remove());
+
+  try {
+    const res = await fetch(WORKER_URL + '/build', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed.');
+
+    for (let i = 0; i < 240; i++) {            // up to about 20 minutes
+      await sleep(5000);
+      const s = await (await fetch(WORKER_URL + '/status/' + data.id)).json();
+      if (s.error) throw new Error(s.error);
+      if (s.state === 'queued') $('step').textContent = 'Waiting for a build machine';
+      if (s.state === 'building') $('step').textContent = 'Building the APK (a few minutes)';
+      if (s.state === 'failed') { fail('The build failed. Check that your zip has an index.html.', s.logUrl); return; }
+      if (s.state === 'done') {
+        $('step').textContent = 'Your APK is ready';
+        $('bar').style.display = 'none';
+        const a = document.createElement('a');
+        a.className = 'btn';
+        a.href = s.url;
+        a.textContent = 'Download APK';
+        $('status').appendChild(a);
+        $('go').disabled = false;
+        return;
+      }
+    }
+    throw new Error('The build is taking too long. Try again in a few minutes.');
+  } catch (e) {
+    fail(e.message);
+  }
+});
+</script>
+</body>
+</html>
